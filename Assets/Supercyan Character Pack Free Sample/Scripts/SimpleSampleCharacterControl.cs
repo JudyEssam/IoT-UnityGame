@@ -1,5 +1,7 @@
 ﻿using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Splines;
+using Unity.Mathematics;
 
 namespace Supercyan.FreeSample
 {
@@ -17,10 +19,18 @@ namespace Supercyan.FreeSample
             Direct
         }
 
+        [SerializeField] public SplineContainer roadSpline;
         [SerializeField] private float m_moveSpeed = 2;
         [SerializeField] private float m_turnSpeed = 20;
         [SerializeField] private float m_jumpForce = 4;
         [SerializeField] private float m_forwardSpeed = 4f;
+        [SerializeField] private float m_lateralSpeed = 2f;
+
+        [Header("Spline Movement")]
+        [SerializeField] private float m_laneWidth = 2f;
+
+        private float m_splineT = 0f;       // progress along spline
+        private float m_lateralOffset = 0f; // left/right position
 
         [SerializeField] private Animator m_animator = null;
         [SerializeField] private Rigidbody m_rigidBody = null;
@@ -48,8 +58,8 @@ namespace Supercyan.FreeSample
 
         private void Awake()
         {
-            if (!m_animator) { gameObject.GetComponent<Animator>(); }
-            if (!m_rigidBody) { gameObject.GetComponent<Animator>(); }
+            if (!m_animator) m_animator = GetComponent<Animator>();
+            if (!m_rigidBody) m_rigidBody = GetComponent<Rigidbody>();
         }
 
         private void OnCollisionEnter(Collision collision)
@@ -168,23 +178,46 @@ namespace Supercyan.FreeSample
 
         private void DirectUpdate()
         {
-            // ONLY horizontal input (left / right)
+            // Horizontal input (left / right)
             float h = Input.GetAxis("Horizontal");
-
-            // Smooth horizontal steering
             m_currentH = Mathf.Lerp(m_currentH, h, Time.deltaTime * m_interpolation);
 
-            // Constant forward movement (NO input)
-            Vector3 forwardMove = transform.forward * m_forwardSpeed * Time.deltaTime;
+            // Move forward along spline
+            float splineLength = roadSpline.CalculateLength();
+            m_splineT += (m_forwardSpeed / splineLength) * Time.deltaTime;
+            m_splineT = Mathf.Clamp01(m_splineT);
 
-            // Sideways movement
-            Vector3 sideMove = transform.right * m_currentH * m_moveSpeed * Time.deltaTime;
+            // Evaluate spline
+            roadSpline.Evaluate(
+                m_splineT,
+                out float3 splinePosF,
+                out float3 splineTangentF,
+                out float3 splineUpF
+            );
 
-            // Apply movement
-            Vector3 targetPosition = m_rigidBody.position + forwardMove + sideMove;
+            Vector3 splinePos = (Vector3)splinePosF;
+            Vector3 splineTangent = (Vector3)splineTangentF;
+            Vector3 splineUp = (Vector3)splineUpF;
+
+            // Compute right direction relative to road
+            Vector3 splineRight = Vector3.Cross(splineUp, splineTangent).normalized;
+
+            // Update lateral offset
+            m_lateralOffset += m_currentH * m_lateralSpeed * Time.deltaTime;
+            m_lateralOffset = Mathf.Clamp(m_lateralOffset, -1f, 1f);
+
+            // Final position
+            Vector3 targetPosition =
+                splinePos +
+                splineRight * m_lateralOffset * m_laneWidth;
+
             m_rigidBody.MovePosition(targetPosition);
 
-            // Animation: speed is based only on forward motion
+            // Face forward along road
+            Quaternion targetRotation = Quaternion.LookRotation(splineTangent, splineUp);
+            m_rigidBody.MoveRotation(targetRotation);
+
+            // Animation
             m_animator.SetFloat("MoveSpeed", m_forwardSpeed);
 
             JumpingAndLanding();
